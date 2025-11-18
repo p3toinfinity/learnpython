@@ -1,0 +1,27 @@
+# Snowflake configuration file (contains sensitive credentials)
+snowflake_config.json
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Generated SQL files (optional - uncomment if you don't want to track them)
+# snowflake_insert_*.sql
+
+# OS files
+.DS_Store
+Thumbs.db
+
