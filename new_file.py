@@ -7,6 +7,7 @@ import requests
 import json
 import os
 import sys
+from datetime import datetime
 
 
 def get_weather(city_name, api_key):
@@ -31,10 +32,50 @@ def get_weather(city_name, api_key):
     try:
         response = requests.get(base_url, params=params, timeout=10)
         response.raise_for_status()  # Raises an HTTPError for bad responses
-        print(response.json())
         return response.json()
     except requests.exceptions.RequestException as e:
         print(f"Error fetching weather data: {e}")
+        return None
+
+
+def save_raw_response(weather_data, city_name, output_dir="weather_data"):
+    """
+    Saves the raw JSON response to a file
+    
+    Args:
+        weather_data (dict): Raw weather data from API
+        city_name (str): Name of the city (for filename)
+        output_dir (str): Directory to save the file (default: "weather_data")
+    
+    Returns:
+        str: Path to the saved file, None if failed
+    """
+    if not weather_data:
+        print("No weather data to save.")
+        return None
+    
+    try:
+        # Create output directory if it doesn't exist
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            print(f"Created directory: {output_dir}")
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Sanitize city name for filename (remove spaces, special chars)
+        safe_city_name = "".join(c for c in city_name if c.isalnum() or c in (' ', '-', '_')).strip().replace(' ', '_')
+        filename = f"{safe_city_name}_{timestamp}.json"
+        filepath = os.path.join(output_dir, filename)
+        
+        # Write JSON to file with pretty formatting
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(weather_data, f, indent=4, ensure_ascii=False)
+        
+        print(f"\n✓ Raw response saved to: {filepath}")
+        return filepath
+        
+    except Exception as e:
+        print(f"Error saving raw response to file: {e}")
         return None
 
 
@@ -97,6 +138,10 @@ def main():
     weather_data = get_weather(city_name, api_key)
     
     if weather_data:
+        # Save raw response to file
+        save_raw_response(weather_data, city_name)
+        
+        # Display formatted weather information
         display_weather(weather_data)
     else:
         print("Failed to retrieve weather data. Please check:")
