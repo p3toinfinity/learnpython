@@ -31,6 +31,7 @@ def get_weather(city_name, api_key):
     try:
         response = requests.get(base_url, params=params, timeout=10)
         response.raise_for_status()  # Raises an HTTPError for bad responses
+        print(response.json())
         return response.json()
     except requests.exceptions.RequestException as e:
         print(f"Error fetching weather data: {e}")
