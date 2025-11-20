@@ -176,37 +176,138 @@ def connect_to_snowflake(account, user, password, warehouse, database, schema):
     return None
 
 
-def execute_sql_in_snowflake(conn, sql_statements, table_name="table"):
-    if not conn:
-        print("Error: No connection to Snowflake")
-        return False
-    
+def load_data_to_variant_table(conn, json_files):
     cursor = conn.cursor()
     try:
-        statements = [
-            s.strip() 
-            for s in sql_statements.split(';') 
-            if s.strip() and not s.strip().startswith('--')
-        ]
+        print(f"\nLoading {len(json_files)} record(s) into WEATHER_DATA_RAW table...")
         
-        print(f"   Executing {len(statements)} INSERT statement(s) for {table_name}...")
+        cursor.execute("SELECT COUNT(*) FROM WEATHER_DATA_RAW")
+        existing_count = cursor.fetchone()[0]
+        print(f"   Current records in table: {existing_count}")
         
-        for i, statement in enumerate(statements, 1):
-            if statement:
-                cursor.execute(statement)
-                if i % 10 == 0:
-                    print(f"   Progress: {i}/{len(statements)} statements executed...")
+        for i, item in enumerate(json_files, 1):
+            try:
+                data = item['data']
+                city_name = data.get('name', 'Unknown')
+                city_id = data.get('id', 0)
+                country_code = data.get('sys', {}).get('country', '')
+                
+                json_str = json.dumps(data)
+                json_str_escaped = json_str.replace("'", "''").replace("\\", "\\\\")
+                
+                city_name_escaped = city_name.replace("'", "''")
+                country_code_escaped = country_code.replace("'", "''")
+                
+                sql = f"""
+                    INSERT INTO WEATHER_DATA_RAW (CITY_NAME, CITY_ID, COUNTRY_CODE, WEATHER_JSON)
+                    SELECT '{city_name_escaped}', {city_id}, '{country_code_escaped}', PARSE_JSON('{json_str_escaped}')
+                """
+                cursor.execute(sql)
+                
+                if i % 5 == 0:
+                    print(f"   Progress: {i}/{len(json_files)} records processed...")
+            except Exception as e:
+                print(f"✗ Error inserting record {i} ({item.get('filename', 'unknown')}): {e}")
+                print(f"   Error type: {type(e).__name__}")
+                import traceback
+                traceback.print_exc()
+                raise
         
         conn.commit()
-        print(f"✓ Successfully loaded {len(statements)} record(s) into {table_name}")
+        print(f"✓ Successfully loaded {len(json_files)} record(s) into WEATHER_DATA_RAW")
         return True
     except snowflake.errors.ProgrammingError as e:
         print(f"✗ SQL execution error: {e}")
         print(f"   Error code: {e.errno if hasattr(e, 'errno') else 'N/A'}")
+        print(f"   SQL state: {e.sqlstate if hasattr(e, 'sqlstate') else 'N/A'}")
         conn.rollback()
         return False
     except Exception as e:
-        print(f"✗ Unexpected error executing SQL: {e}")
+        print(f"✗ Unexpected error: {e}")
+        print(f"   Error type: {type(e).__name__}")
+        import traceback
+        traceback.print_exc()
+        conn.rollback()
+        return False
+    finally:
+        cursor.close()
+
+
+def load_data_to_normalized_table(conn, json_files):
+    cursor = conn.cursor()
+    try:
+        print(f"\nLoading {len(json_files)} record(s) into WEATHER_DATA_NORMALIZED table...")
+        
+        for i, item in enumerate(json_files, 1):
+            try:
+                data = item['data']
+                coord = data.get('coord', {})
+                weather_array = data.get('weather', [{}])
+                weather = weather_array[0] if weather_array else {}
+                main_data = data.get('main', {})
+                wind = data.get('wind', {})
+                clouds = data.get('clouds', {})
+                sys_data = data.get('sys', {})
+                
+                name = data.get("name", "").replace("'", "''")
+                country = sys_data.get("country", "").replace("'", "''")
+                weather_main = weather.get("main", "").replace("'", "''")
+                weather_desc = weather.get("description", "").replace("'", "''")
+                weather_icon = weather.get("icon", "").replace("'", "''")
+                base = data.get("base", "").replace("'", "''")
+                
+                sql = f"""
+                    INSERT INTO WEATHER_DATA_NORMALIZED (
+                        CITY_NAME, CITY_ID, COUNTRY_CODE,
+                        LONGITUDE, LATITUDE,
+                        WEATHER_ID, WEATHER_MAIN, WEATHER_DESCRIPTION, WEATHER_ICON,
+                        BASE,
+                        TEMPERATURE, FEELS_LIKE, TEMP_MIN, TEMP_MAX,
+                        PRESSURE, HUMIDITY, SEA_LEVEL, GROUND_LEVEL,
+                        VISIBILITY,
+                        WIND_SPEED, WIND_DEGREE,
+                        CLOUD_COVERAGE,
+                        DATA_TIMESTAMP, SUNRISE_TIMESTAMP, SUNSET_TIMESTAMP, TIMEZONE_OFFSET,
+                        SYS_TYPE, SYS_ID,
+                        RESPONSE_CODE
+                    ) VALUES (
+                        '{name}', {data.get("id", 0)}, '{country}',
+                        {coord.get("lon", 0)}, {coord.get("lat", 0)},
+                        {weather.get("id", 0)}, '{weather_main}', '{weather_desc}', '{weather_icon}',
+                        '{base}',
+                        {main_data.get("temp", 0)}, {main_data.get("feels_like", 0)}, {main_data.get("temp_min", 0)}, {main_data.get("temp_max", 0)},
+                        {main_data.get("pressure", 0)}, {main_data.get("humidity", 0)}, {main_data.get("sea_level", 0)}, {main_data.get("grnd_level", 0)},
+                        {data.get("visibility", 0)},
+                        {wind.get("speed", 0)}, {wind.get("deg", 0)},
+                        {clouds.get("all", 0)},
+                        {data.get("dt", 0)}, {sys_data.get("sunrise", 0)}, {sys_data.get("sunset", 0)}, {data.get("timezone", 0)},
+                        {sys_data.get("type", 0)}, {sys_data.get("id", 0)},
+                        {data.get("cod", 0)}
+                    )
+                """
+                cursor.execute(sql)
+                
+                if i % 5 == 0:
+                    print(f"   Progress: {i}/{len(json_files)} records processed...")
+            except Exception as e:
+                print(f"✗ Error inserting record {i} ({item.get('filename', 'unknown')}): {e}")
+                print(f"   Error type: {type(e).__name__}")
+                raise
+        
+        conn.commit()
+        print(f"✓ Successfully loaded {len(json_files)} record(s) into WEATHER_DATA_NORMALIZED")
+        return True
+    except snowflake.errors.ProgrammingError as e:
+        print(f"✗ SQL execution error: {e}")
+        print(f"   Error code: {e.errno if hasattr(e, 'errno') else 'N/A'}")
+        print(f"   SQL state: {e.sqlstate if hasattr(e, 'sqlstate') else 'N/A'}")
+        conn.rollback()
+        return False
+    except Exception as e:
+        print(f"✗ Unexpected error: {e}")
+        print(f"   Error type: {type(e).__name__}")
+        import traceback
+        print(f"   Traceback: {traceback.format_exc()}")
         conn.rollback()
         return False
     finally:
@@ -256,8 +357,23 @@ def main():
         print("DATA LOADING")
         print("=" * 70)
         
-        print("\n⚠ SQL generation functions have been removed.")
-        print("   Please implement a data loading method (e.g., COPY INTO, bulk insert).")
+        print("\n3. Loading data to Snowflake tables...")
+        print("-" * 70)
+        
+        load_variant = input("Load to WEATHER_DATA_RAW table (VARIANT)? (y/n): ").strip().lower()
+        if load_variant == 'y':
+            load_data_to_variant_table(conn, json_files)
+        
+        load_normalized = input("\nLoad to WEATHER_DATA_NORMALIZED table? (y/n): ").strip().lower()
+        if load_normalized == 'y':
+            load_data_to_normalized_table(conn, json_files)
+        
+        if load_variant != 'y' and load_normalized != 'y':
+            print("\n⚠ No tables selected for loading.")
+        else:
+            print("\n" + "=" * 70)
+            print("✓ Data loading completed!")
+            print("=" * 70)
     finally:
         conn.close()
         print("\n✓ Snowflake connection closed")
