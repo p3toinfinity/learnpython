@@ -25,3 +25,8 @@ ENV/
 .DS_Store
 Thumbs.db
 
+# dbt logs and generated files
+logs/
+target/
+dbt_packages/
+
