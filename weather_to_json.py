@@ -8,6 +8,47 @@ import json
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
+import boto3
+from botocore.exceptions import ClientError, NoCredentialsError
+
+
+def load_aws_config(config_path="aws_config.json"):
+    """
+    Loads AWS configuration from a JSON file
+    
+    Args:
+        config_path (str): Path to the AWS config JSON file
+        
+    Returns:
+        dict: AWS configuration dictionary, None if failed
+    """
+    config_file = Path(config_path)
+    
+    if not config_file.exists():
+        print(f"Error: AWS config file '{config_path}' not found.")
+        return None
+    
+    try:
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        
+        aws_config = config.get('aws', {})
+        required_fields = ['access_key_id', 'secret_access_key', 'bucket_name']
+        
+        if not all(field in aws_config and aws_config[field] for field in required_fields):
+            print(f"Error: Missing required fields in AWS config. Required: {required_fields}")
+            return None
+        
+        print(f"\n✓ Loaded AWS configuration from: {config_path}")
+        return aws_config
+        
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid JSON in config file: {e}")
+        return None
+    except Exception as e:
+        print(f"Error loading AWS config: {e}")
+        return None
 
 
 def get_weather(city_name, api_key):
@@ -38,44 +79,81 @@ def get_weather(city_name, api_key):
         return None
 
 
-def save_raw_response(weather_data, city_name, output_dir="weather_data"):
+def save_raw_response_to_s3(weather_data, city_name, aws_config):
     """
-    Saves the raw JSON response to a file
+    Saves the raw JSON response to AWS S3
     
     Args:
         weather_data (dict): Raw weather data from API
         city_name (str): Name of the city (for filename)
-        output_dir (str): Directory to save the file (default: "weather_data")
+        aws_config (dict): AWS configuration dictionary containing:
+            - access_key_id: AWS access key ID
+            - secret_access_key: AWS secret access key
+            - region: AWS region (optional, defaults to us-east-1)
+            - bucket_name: S3 bucket name
+            - s3_prefix: Optional S3 prefix/folder path (optional)
     
     Returns:
-        str: Path to the saved file, None if failed
+        str: S3 object key (path) if successful, None if failed
     """
     if not weather_data:
         print("No weather data to save.")
         return None
     
     try:
-        # Create output directory if it doesn't exist
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-            print(f"Created directory: {output_dir}")
+        # Initialize S3 client with credentials from config
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=aws_config['access_key_id'],
+            aws_secret_access_key=aws_config['secret_access_key'],
+            region_name=aws_config.get('region', 'us-east-1')
+        )
+        
+        bucket_name = aws_config['bucket_name']
+        s3_prefix = aws_config.get('s3_prefix', '')
         
         # Generate filename with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         # Sanitize city name for filename (remove spaces, special chars)
         safe_city_name = "".join(c for c in city_name if c.isalnum() or c in (' ', '-', '_')).strip().replace(' ', '_')
         filename = f"{safe_city_name}_{timestamp}.json"
-        filepath = os.path.join(output_dir, filename)
         
-        # Write JSON to file with pretty formatting
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(weather_data, f, indent=4, ensure_ascii=False)
+        # Construct S3 object key (path)
+        if s3_prefix:
+            s3_key = f"{s3_prefix.rstrip('/')}/{filename}"
+        else:
+            s3_key = filename
         
-        print(f"\n✓ Raw response saved to: {filepath}")
-        return filepath
+        # Convert JSON to string
+        json_content = json.dumps(weather_data, indent=4, ensure_ascii=False)
         
+        # Upload to S3
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key=s3_key,
+            Body=json_content.encode('utf-8'),
+            ContentType='application/json'
+        )
+        
+        s3_url = f"s3://{bucket_name}/{s3_key}"
+        print(f"\n✓ Raw response saved to S3: {s3_url}")
+        return s3_key
+        
+    except NoCredentialsError:
+        print("Error: AWS credentials invalid or not found.")
+        print("Please check your AWS credentials in 'aws_config.json'.")
+        return None
+    except ClientError as e:
+        error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+        if error_code == 'NoSuchBucket':
+            print(f"Error: S3 bucket '{bucket_name}' does not exist.")
+        elif error_code == 'AccessDenied':
+            print(f"Error: Access denied to bucket '{bucket_name}'. Check your AWS permissions.")
+        else:
+            print(f"Error uploading to S3: {e}")
+        return None
     except Exception as e:
-        print(f"Error saving raw response to file: {e}")
+        print(f"Error saving raw response to S3: {e}")
         return None
 
 
@@ -115,6 +193,23 @@ def main():
     """
     Main function to run the weather app
     """
+    # Load AWS configuration from JSON file
+    aws_config = load_aws_config()
+    if not aws_config:
+        print("\nPlease create 'aws_config.json' with the following structure:")
+        print("""
+{
+  "aws": {
+    "access_key_id": "your_access_key_id",
+    "secret_access_key": "your_secret_access_key",
+    "region": "us-east-1",
+    "bucket_name": "your-bucket-name",
+    "s3_prefix": "weather-data"
+  }
+}
+        """)
+        sys.exit(1)
+    
     # Get API key from environment variable or use a placeholder
     api_key = os.getenv("OPENWEATHER_API_KEY")
     
@@ -138,8 +233,8 @@ def main():
     weather_data = get_weather(city_name, api_key)
     
     if weather_data:
-        # Save raw response to file
-        save_raw_response(weather_data, city_name)
+        # Save raw response to S3
+        save_raw_response_to_s3(weather_data, city_name, aws_config)
         
         # Display formatted weather information
         display_weather(weather_data)
