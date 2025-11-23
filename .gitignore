@@ -1,5 +1,6 @@
-# Snowflake configuration file (contains sensitive credentials)
+# Configuration files (contains sensitive credentials)
 snowflake_config.json
+aws_config.json
 
 # Python cache files
 __pycache__/

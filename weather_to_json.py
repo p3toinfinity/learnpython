@@ -102,15 +102,30 @@ def save_raw_response_to_s3(weather_data, city_name, aws_config):
     
     try:
         # Initialize S3 client with credentials from config
+        region = aws_config.get('region', 'us-east-1')
         s3_client = boto3.client(
             's3',
             aws_access_key_id=aws_config['access_key_id'],
             aws_secret_access_key=aws_config['secret_access_key'],
-            region_name=aws_config.get('region', 'us-east-1')
+            region_name=region
         )
         
         bucket_name = aws_config['bucket_name']
-        s3_prefix = aws_config.get('s3_prefix', '')
+        s3_prefix = aws_config.get('s3_prefix', '').strip()
+        
+        # Verify credentials by attempting to get caller identity (using STS)
+        try:
+            sts_client = boto3.client(
+                'sts',
+                aws_access_key_id=aws_config['access_key_id'],
+                aws_secret_access_key=aws_config['secret_access_key'],
+                region_name=region
+            )
+            identity = sts_client.get_caller_identity()
+            print(f"✓ AWS credentials verified. Account: {identity.get('Account', 'N/A')}")
+        except Exception as cred_error:
+            print(f"⚠ Warning: Could not verify AWS credentials: {cred_error}")
+            print("   Continuing with S3 upload attempt...")
         
         # Generate filename with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -120,9 +135,16 @@ def save_raw_response_to_s3(weather_data, city_name, aws_config):
         
         # Construct S3 object key (path)
         if s3_prefix:
-            s3_key = f"{s3_prefix.rstrip('/')}/{filename}"
+            # Remove leading/trailing slashes and ensure single separator
+            s3_prefix = s3_prefix.strip('/')
+            s3_key = f"{s3_prefix}/{filename}" if s3_prefix else filename
         else:
             s3_key = filename
+        
+        print(f"Uploading to S3:")
+        print(f"  Bucket: {bucket_name}")
+        print(f"  Key: {s3_key}")
+        print(f"  Region: {aws_config.get('region', 'us-east-1')}")
         
         # Convert JSON to string
         json_content = json.dumps(weather_data, indent=4, ensure_ascii=False)
@@ -145,15 +167,34 @@ def save_raw_response_to_s3(weather_data, city_name, aws_config):
         return None
     except ClientError as e:
         error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+        error_message = e.response.get('Error', {}).get('Message', str(e))
+        
+        print(f"\n✗ AWS S3 Error ({error_code}): {error_message}")
+        
         if error_code == 'NoSuchBucket':
-            print(f"Error: S3 bucket '{bucket_name}' does not exist.")
+            print(f"   Bucket name: '{bucket_name}'")
+            print(f"   Please verify the bucket name exists in region '{aws_config.get('region', 'us-east-1')}'")
         elif error_code == 'AccessDenied':
-            print(f"Error: Access denied to bucket '{bucket_name}'. Check your AWS permissions.")
+            print(f"   Bucket: '{bucket_name}'")
+            print(f"   Your AWS credentials are valid, but you don't have permission to access this bucket.")
+            print(f"   Please check:")
+            print(f"   1. The IAM user has S3 permissions (e.g., s3:PutObject, s3:GetObject)")
+            print(f"   2. The bucket name is correct: '{bucket_name}'")
+            print(f"   3. The bucket exists in region '{aws_config.get('region', 'us-east-1')}'")
+            print(f"   4. There are no bucket policies blocking your access")
+        elif error_code == 'InvalidAccessKeyId':
+            print(f"   The AWS Access Key ID provided is invalid.")
+            print(f"   Please check your 'access_key_id' in aws_config.json")
+        elif error_code == 'SignatureDoesNotMatch':
+            print(f"   The AWS Secret Access Key provided is invalid.")
+            print(f"   Please check your 'secret_access_key' in aws_config.json")
         else:
-            print(f"Error uploading to S3: {e}")
+            print(f"   Full error details: {e}")
         return None
     except Exception as e:
-        print(f"Error saving raw response to S3: {e}")
+        print(f"\n✗ Unexpected error saving to S3: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
