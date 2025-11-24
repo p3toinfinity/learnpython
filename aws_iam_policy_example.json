@@ -10,10 +10,16 @@
         "s3:ListBucket"
       ],
       "Resource": [
-        "arn:aws:s3:::karthik-weatherdata--use1-az4--x-s3",
-        "arn:aws:s3:::karthik-weatherdata--use1-az4--x-s3/*"
+        "arn:aws:s3:::YOUR_BUCKET_NAME",
+        "arn:aws:s3:::YOUR_BUCKET_NAME/*"
       ]
     }
   ]
 }
+
+# Instructions:
+# 1. Replace YOUR_BUCKET_NAME (in both Resource lines) with your actual S3 bucket name
+# 2. Copy this entire JSON (without these comments) into AWS IAM Console
+# 3. Go to IAM → Users → karthik-aws → Add permissions → Create inline policy → JSON tab
+# 4. Paste the updated policy and save as "S3WeatherDataAccess"
 
