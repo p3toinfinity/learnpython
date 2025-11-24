@@ -512,41 +512,40 @@ class WeatherDataLoader:
             existing_count = self.cursor.fetchone()[0]
             print(f"   Current records in table: {existing_count:,}")
             
-            # Process in batches using multi-row INSERT for better performance
+            # Process in batches - use individual INSERT statements for JSON to avoid parsing issues
             total_records = len(df)
             
             with tqdm(total=total_records, desc="Loading to WEATHER_DATA_RAW", unit="records") as pbar:
                 for i in range(0, total_records, self.SNOWFLAKE_BATCH_SIZE):
                     batch_df = df.iloc[i:i + self.SNOWFLAKE_BATCH_SIZE]
                     
-                    # Build multi-row INSERT statement
-                    values_list = []
+                    # Use individual INSERT statements for each row to handle JSON properly
                     for _, row in batch_df.iterrows():
-                        city_name = str(row['CITY_NAME']).replace("'", "''")
-                        city_id = int(row['CITY_ID'])
-                        country_code = str(row['COUNTRY_CODE']).replace("'", "''")
-                        # Properly escape JSON string for SQL: escape single quotes and backslashes
-                        weather_json = str(row['WEATHER_JSON'])
-                        # Escape: single quotes -> double single quotes, backslashes -> double backslashes
-                        weather_json_escaped = weather_json.replace("\\", "\\\\").replace("'", "''")
-                        
-                        values_list.append(
-                            f"('{city_name}', {city_id}, '{country_code}', PARSE_JSON('{weather_json_escaped}'))"
-                        )
+                        try:
+                            city_name = str(row['CITY_NAME']).replace("'", "''")
+                            city_id = int(row['CITY_ID'])
+                            country_code = str(row['COUNTRY_CODE']).replace("'", "''")
+                            # Properly escape JSON string for SQL (exact same pattern as load_to_snowflake.py)
+                            weather_json = str(row['WEATHER_JSON'])
+                            # Escape: single quotes -> double single quotes, backslashes -> double backslashes
+                            # Order: single quotes first, then backslashes (matches original working code)
+                            weather_json_escaped = weather_json.replace("'", "''").replace("\\", "\\\\")
+                            
+                            # Use individual INSERT with SELECT (same pattern as load_to_snowflake.py)
+                            insert_sql = f"""
+                                INSERT INTO WEATHER_DATA_RAW (CITY_NAME, CITY_ID, COUNTRY_CODE, WEATHER_JSON)
+                                SELECT '{city_name}', {city_id}, '{country_code}', PARSE_JSON('{weather_json_escaped}')
+                            """
+                            self.cursor.execute(insert_sql)
+                            pbar.update(1)
+                        except Exception as e:
+                            print(f"\n✗ Error inserting record: {e}")
+                            # Continue with next record
+                            pbar.update(1)
+                            continue
                     
-                    # Build and execute multi-row INSERT
-                    if values_list:
-                        values_str = ',\n                        '.join(values_list)
-                        insert_sql = f"""
-                            INSERT INTO WEATHER_DATA_RAW (CITY_NAME, CITY_ID, COUNTRY_CODE, WEATHER_JSON)
-                            VALUES {values_str}
-                        """
-                        self.cursor.execute(insert_sql)
-                        pbar.update(len(batch_df))
-                    
-                    # Commit periodically to avoid large transactions
-                    if (i // self.SNOWFLAKE_BATCH_SIZE) % 10 == 0:
-                        self.conn.commit()
+                    # Commit after each batch
+                    self.conn.commit()
             
             self.conn.commit()
             print(f"✓ Successfully loaded {len(df):,} record(s) into WEATHER_DATA_RAW")
