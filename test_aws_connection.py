@@ -56,8 +56,40 @@ def test_aws_connection():
         print(f"   ✗ Error: {e}")
         return
     
-    # Test 2: Check S3 access
-    print("\n2. Testing S3 access...")
+    # Test 2: List all accessible buckets
+    print("\n2. Listing accessible S3 buckets...")
+    try:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name=region
+        )
+        
+        # List all buckets
+        response = s3_client.list_buckets()
+        buckets = response.get('Buckets', [])
+        
+        if buckets:
+            print(f"   ✓ Found {len(buckets)} accessible bucket(s):")
+            for bucket in buckets:
+                bucket_name_listed = bucket['Name']
+                creation_date = bucket['CreationDate']
+                print(f"   - {bucket_name_listed} (created: {creation_date})")
+                
+                # Check if this matches the configured bucket
+                if bucket_name_listed == bucket_name:
+                    print(f"     ✓ This matches your configured bucket!")
+        else:
+            print("   No buckets found or no permission to list buckets")
+            
+    except ClientError as e:
+        error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+        print(f"   ✗ Cannot list buckets: {error_code}")
+        print(f"   Message: {e.response.get('Error', {}).get('Message', str(e))}")
+    
+    # Test 3: Check specific bucket access
+    print(f"\n3. Testing access to configured bucket '{bucket_name}'...")
     try:
         s3_client = boto3.client(
             's3',
@@ -71,7 +103,7 @@ def test_aws_connection():
         print(f"   ✓ Bucket '{bucket_name}' exists and is accessible!")
         
         # List some objects (first 5)
-        print(f"\n3. Listing objects in bucket...")
+        print(f"\n4. Listing objects in bucket...")
         response = s3_client.list_objects_v2(Bucket=bucket_name, MaxKeys=5)
         if 'Contents' in response:
             print(f"   Found {response.get('KeyCount', 0)} objects (showing first 5):")

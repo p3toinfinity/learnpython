@@ -1,0 +1,19 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowS3WeatherDataAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::karthik-weatherdata--use1-az4--x-s3",
+        "arn:aws:s3:::karthik-weatherdata--use1-az4--x-s3/*"
+      ]
+    }
+  ]
+}
+
