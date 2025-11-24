@@ -525,10 +525,16 @@ class WeatherDataLoader:
                         city_name = str(row['CITY_NAME']).replace("'", "''")
                         city_id = int(row['CITY_ID'])
                         country_code = str(row['COUNTRY_CODE']).replace("'", "''")
-                        weather_json = str(row['WEATHER_JSON']).replace("'", "''").replace("\\", "\\\\")
+                        # Use $JSON$ delimiter for JSON to avoid escaping issues with single quotes and backslashes
+                        weather_json = str(row['WEATHER_JSON'])
+                        # Use a unique delimiter that's unlikely to appear in JSON
+                        # If JSON somehow contains $JSON$, we'll use a different tag
+                        delimiter = '$JSON$'
+                        if delimiter in weather_json:
+                            delimiter = '$WEATHER_JSON$'
                         
                         values_list.append(
-                            f"('{city_name}', {city_id}, '{country_code}', PARSE_JSON('{weather_json}'))"
+                            f"('{city_name}', {city_id}, '{country_code}', PARSE_JSON({delimiter}{weather_json}{delimiter}))"
                         )
                     
                     # Build and execute multi-row INSERT
