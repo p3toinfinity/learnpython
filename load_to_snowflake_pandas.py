@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 import snowflake.connector as snowflake
 from tqdm import tqdm
+import boto3
+from botocore.exceptions import ClientError, NoCredentialsError
 
 
 class WeatherDataLoader:
@@ -23,29 +25,195 @@ class WeatherDataLoader:
     JSON_BATCH_SIZE = 10000  # Process JSON files in batches
     SNOWFLAKE_BATCH_SIZE = 5000  # Insert records in batches to Snowflake
     
-    def __init__(self, config_path: str = "snowflake_config.json"):
+    def __init__(self, config_path: str = "snowflake_config.json", aws_config_path: str = "aws_config.json"):
         """Initialize the loader with configuration."""
         self.config_path = config_path
+        self.aws_config_path = aws_config_path
         self.conn = None
         self.cursor = None
+        self.aws_config = None
+        self.s3_client = None
         
-    def read_json_files_pandas(self, directory: str = "weather_data") -> pd.DataFrame:
+    def load_aws_config(self) -> Optional[Dict]:
         """
-        Read all JSON files using pandas for efficient processing.
+        Loads AWS configuration from a JSON file
+        
+        Returns:
+            dict: AWS configuration dictionary, None if failed
+        """
+        config_file = Path(self.aws_config_path)
+        
+        if not config_file.exists():
+            print(f"✗ Error: AWS config file '{self.aws_config_path}' not found.")
+            return None
+        
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            
+            aws_config = config.get('aws', {})
+            required_fields = ['access_key_id', 'secret_access_key', 'bucket_name']
+            
+            if not all(field in aws_config and aws_config[field] for field in required_fields):
+                print(f"✗ Error: Missing required fields in AWS config. Required: {required_fields}")
+                return None
+            
+            print(f"✓ Loaded AWS configuration from: {self.aws_config_path}")
+            return aws_config
+            
+        except json.JSONDecodeError as e:
+            print(f"✗ Error: Invalid JSON in AWS config file: {e}")
+            return None
+        except Exception as e:
+            print(f"✗ Error loading AWS config: {e}")
+            return None
+    
+    def initialize_s3_client(self, aws_config: Dict):
+        """
+        Initialize S3 client with AWS credentials
+        
+        Args:
+            aws_config: AWS configuration dictionary
+        """
+        try:
+            region = aws_config.get('region', 'us-east-1')
+            self.s3_client = boto3.client(
+                's3',
+                aws_access_key_id=aws_config['access_key_id'],
+                aws_secret_access_key=aws_config['secret_access_key'],
+                region_name=region
+            )
+            print(f"✓ Initialized S3 client for region: {region}")
+        except Exception as e:
+            print(f"✗ Error initializing S3 client: {e}")
+            raise
+    
+    def list_s3_json_files(self, aws_config: Dict) -> List[Dict]:
+        """
+        List all JSON files in S3 bucket
+        
+        Args:
+            aws_config: AWS configuration dictionary
+            
+        Returns:
+            List of dictionaries with 'Key' (S3 object key) and 'Size' (file size)
+        """
+        bucket_name = aws_config['bucket_name']
+        s3_prefix = aws_config.get('s3_prefix', '').strip()
+        
+        json_files = []
+        continuation_token = None
+        
+        try:
+            while True:
+                list_kwargs = {
+                    'Bucket': bucket_name,
+                    'Prefix': s3_prefix,
+                }
+                
+                if continuation_token:
+                    list_kwargs['ContinuationToken'] = continuation_token
+                
+                response = self.s3_client.list_objects_v2(**list_kwargs)
+                
+                if 'Contents' not in response:
+                    break
+                
+                # Filter for JSON files only
+                for obj in response['Contents']:
+                    key = obj['Key']
+                    if key.lower().endswith('.json'):
+                        json_files.append({
+                            'Key': key,
+                            'Size': obj['Size'],
+                            'LastModified': obj.get('LastModified')
+                        })
+                
+                # Check if there are more objects
+                if not response.get('IsTruncated', False):
+                    break
+                
+                continuation_token = response.get('NextContinuationToken')
+            
+            return json_files
+            
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+            if error_code == 'NoSuchBucket':
+                print(f"✗ Error: S3 bucket '{bucket_name}' does not exist.")
+            elif error_code == 'AccessDenied':
+                print(f"✗ Error: Access denied to bucket '{bucket_name}'. Check your AWS permissions.")
+            else:
+                print(f"✗ Error listing S3 objects: {e}")
+            return []
+        except Exception as e:
+            print(f"✗ Error listing S3 files: {e}")
+            return []
+    
+    def read_json_from_s3(self, s3_key: str, aws_config: Dict) -> Optional[Dict]:
+        """
+        Read and parse a JSON file from S3
+        
+        Args:
+            s3_key: S3 object key (path)
+            aws_config: AWS configuration dictionary
+            
+        Returns:
+            Parsed JSON data as dictionary, None if failed
+        """
+        bucket_name = aws_config['bucket_name']
+        
+        try:
+            response = self.s3_client.get_object(Bucket=bucket_name, Key=s3_key)
+            content = response['Body'].read().decode('utf-8')
+            return json.loads(content)
+        except json.JSONDecodeError as e:
+            print(f"✗ JSON parsing error in S3 object '{s3_key}': {e}")
+            return None
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+            if error_code == 'NoSuchKey':
+                print(f"✗ Error: S3 object '{s3_key}' not found.")
+            else:
+                print(f"✗ Error reading S3 object '{s3_key}': {e}")
+            return None
+        except Exception as e:
+            print(f"✗ Error reading S3 object '{s3_key}': {e}")
+            return None
+    
+    def read_json_files_pandas(self, aws_config: Optional[Dict] = None) -> pd.DataFrame:
+        """
+        Read all JSON files from S3 using pandas for efficient processing.
         Returns a DataFrame with file metadata and raw JSON data.
+        
+        Args:
+            aws_config: Optional AWS config (if None, will load from file)
         """
-        weather_dir = Path(directory)
+        # Load AWS config if not provided
+        if aws_config is None:
+            aws_config = self.load_aws_config()
+            if not aws_config:
+                return pd.DataFrame()
         
-        if not weather_dir.exists():
-            print(f"✗ Error: Directory '{directory}' not found")
+        self.aws_config = aws_config
+        
+        # Initialize S3 client
+        try:
+            self.initialize_s3_client(aws_config)
+        except Exception:
             return pd.DataFrame()
         
-        json_files = list(weather_dir.glob("*.json"))
+        # List all JSON files in S3
+        print(f"\nListing JSON files from S3 bucket...")
+        json_files = self.list_s3_json_files(aws_config)
+        
         if not json_files:
-            print(f"✗ No JSON files found in '{directory}'")
+            bucket_name = aws_config['bucket_name']
+            s3_prefix = aws_config.get('s3_prefix', '')
+            print(f"✗ No JSON files found in s3://{bucket_name}/{s3_prefix}")
             return pd.DataFrame()
         
-        print(f"\n✓ Found {len(json_files)} JSON file(s)")
+        print(f"✓ Found {len(json_files)} JSON file(s) in S3")
         print(f"  Processing in batches of {self.JSON_BATCH_SIZE}...")
         
         # Process files in batches to manage memory
@@ -55,23 +223,25 @@ class WeatherDataLoader:
             batch = json_files[i:i + self.JSON_BATCH_SIZE]
             batch_data = []
             
-            for json_file in tqdm(batch, desc=f"Reading batch {i//self.JSON_BATCH_SIZE + 1}", unit="files"):
+            for s3_file in tqdm(batch, desc=f"Reading batch {i//self.JSON_BATCH_SIZE + 1}", unit="files"):
+                s3_key = s3_file['Key']
                 try:
-                    with open(json_file, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        
-                        # Normalize nested JSON structure using pandas
-                        normalized = pd.json_normalize(data)
-                        # Add metadata
-                        normalized['filename'] = json_file.name
-                        normalized['filepath'] = str(json_file)
-                        normalized['raw_json'] = json.dumps(data)  # Store as string for variant table
-                        
-                        batch_data.append(normalized)
-                except json.JSONDecodeError as e:
-                    print(f"\n✗ JSON parsing error in {json_file.name}: {e}")
+                    # Read JSON from S3
+                    data = self.read_json_from_s3(s3_key, aws_config)
+                    
+                    if data is None:
+                        continue
+                    
+                    # Normalize nested JSON structure using pandas
+                    normalized = pd.json_normalize(data)
+                    # Add metadata
+                    normalized['filename'] = Path(s3_key).name  # Extract filename from S3 key
+                    normalized['filepath'] = s3_key  # Full S3 path
+                    normalized['raw_json'] = json.dumps(data)  # Store as string for variant table
+                    
+                    batch_data.append(normalized)
                 except Exception as e:
-                    print(f"\n✗ Error reading {json_file.name}: {e}")
+                    print(f"\n✗ Error processing S3 object '{s3_key}': {e}")
             
             if batch_data:
                 # Concatenate all DataFrames in batch
@@ -477,23 +647,22 @@ class WeatherDataLoader:
             self.conn.close()
             print("\n✓ Snowflake connection closed")
     
-    def run(self, directory: str = "weather_data", 
-            load_raw: bool = True, load_normalized: bool = True):
+    def run(self, load_raw: bool = True, load_normalized: bool = True):
         """
         Main execution method.
         
         Args:
-            directory: Directory containing JSON files
             load_raw: Whether to load to RAW table
             load_normalized: Whether to load to NORMALIZED table
         """
         print("=" * 70)
         print("SNOWFLAKE DATA LOADER - Optimized (Pandas/NumPy)")
+        print("Loading from AWS S3")
         print("=" * 70)
         
-        # Step 1: Read JSON files
-        print("\n[Step 1] Reading JSON files using Pandas...")
-        df = self.read_json_files_pandas(directory)
+        # Step 1: Load AWS config and read JSON files from S3
+        print("\n[Step 1] Reading JSON files from S3 using Pandas...")
+        df = self.read_json_files_pandas()
         
         if df.empty:
             print("✗ No data to process. Exiting.")
