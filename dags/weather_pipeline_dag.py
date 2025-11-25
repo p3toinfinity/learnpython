@@ -39,21 +39,16 @@ dag = DAG(
 def fetch_weather_task(**context):
     """Task to fetch weather data and save to S3"""
     from weather_to_json import load_aws_config, get_weather, save_raw_response_to_s3
-    from airflow.sdk import Variable
     
-    # Get city name and API key from Airflow Variables (with fallback to env vars)
-    try:
-        city_name = Variable.get("WEATHER_CITY")
-    except:
-        city_name = os.getenv("WEATHER_CITY", "London")
+    # Hardcoded configuration
+    OPENWEATHER_API_KEY = "947f4e1a5c0d4fb6c2a8c155620e970d"  # Replace with your actual API key
+    CITY_NAME = "London"  # Change to your preferred city
     
-    try:
-        api_key = Variable.get("OPENWEATHER_API_KEY")
-    except:
-        api_key = os.getenv("OPENWEATHER_API_KEY")
+    api_key = OPENWEATHER_API_KEY
+    city_name = CITY_NAME
     
     if not api_key:
-        raise ValueError("OPENWEATHER_API_KEY not set. Please set it as an Airflow Variable or environment variable.")
+        raise ValueError("Please set OPENWEATHER_API_KEY in the DAG code (line 44)")
     
     # Load AWS config
     aws_config = load_aws_config()
