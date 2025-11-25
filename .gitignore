@@ -31,3 +31,12 @@ logs/
 target/
 dbt_packages/
 
+# Airflow runtime files
+airflow_home/
+*.db
+*.db-shm
+*.db-wal
+
+# Old local weather data (data is in S3)
+weather_data/*.json
+
