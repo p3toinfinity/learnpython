@@ -491,6 +491,18 @@ class WeatherDataLoader:
             print(f"\n✗ Unexpected error connecting to MySQL: {e}")
             return False
     
+    def table_exists(self, table_name: str) -> bool:
+        """Check if a table exists in the database."""
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text(
+                    f"SELECT COUNT(*) FROM information_schema.tables "
+                    f"WHERE table_schema = DATABASE() AND table_name = '{table_name}'"
+                ))
+                return result.scalar() > 0
+        except Exception:
+            return False
+    
     def load_dataframe_to_raw_table(self, df: pd.DataFrame) -> bool:
         """
         Load DataFrame to WEATHER_DATA_RAW table using SQLAlchemy.
@@ -503,11 +515,15 @@ class WeatherDataLoader:
         try:
             print(f"\nLoading {len(df):,} record(s) into WEATHER_DATA_RAW table...")
             
-            # Check existing count
-            with self.engine.connect() as conn:
-                result = conn.execute(text("SELECT COUNT(*) FROM WEATHER_DATA_RAW"))
-                existing_count = result.scalar()
-                print(f"   Current records in table: {existing_count:,}")
+            # Check if table exists and get existing count
+            table_exists = self.table_exists('WEATHER_DATA_RAW')
+            if table_exists:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("SELECT COUNT(*) FROM WEATHER_DATA_RAW"))
+                    existing_count = result.scalar()
+                    print(f"   Current records in table: {existing_count:,}")
+            else:
+                print("   Table doesn't exist yet. It will be created automatically.")
             
             # Use pandas to_sql with method='multi' for batch inserts
             # Process in chunks to manage memory
@@ -518,11 +534,19 @@ class WeatherDataLoader:
                 for i in range(0, total_records, self.MYSQL_BATCH_SIZE):
                     chunk_df = df.iloc[i:i + self.MYSQL_BATCH_SIZE]
                     
-                    # Use to_sql with if_exists='append' and method='multi' for batch inserts
+                    # Determine if_exists parameter
+                    if i == 0 and not table_exists:
+                        # First chunk and table doesn't exist: create it
+                        if_exists_param = 'replace'
+                    else:
+                        # Table exists or subsequent chunks: append
+                        if_exists_param = 'append'
+                    
+                    # Use to_sql with method='multi' for batch inserts
                     chunk_df.to_sql(
                         name='WEATHER_DATA_RAW',
                         con=self.engine,
-                        if_exists='append',
+                        if_exists=if_exists_param,
                         index=False,
                         method='multi',  # Multi-row INSERT for better performance
                         chunksize=1000  # Internal chunking for very large batches
@@ -557,6 +581,9 @@ class WeatherDataLoader:
         try:
             print(f"\nLoading {len(df):,} record(s) into WEATHER_DATA_NORMALIZED table...")
             
+            # Check if table exists
+            table_exists = self.table_exists('WEATHER_DATA_NORMALIZED')
+            
             # Use pandas to_sql with method='multi' for batch inserts
             # Process in chunks to manage memory
             total_records = len(df)
@@ -565,11 +592,19 @@ class WeatherDataLoader:
                 for i in range(0, total_records, self.MYSQL_BATCH_SIZE):
                     chunk_df = df.iloc[i:i + self.MYSQL_BATCH_SIZE]
                     
-                    # Use to_sql with if_exists='append' and method='multi' for batch inserts
+                    # Determine if_exists parameter
+                    if i == 0 and not table_exists:
+                        # First chunk and table doesn't exist: create it
+                        if_exists_param = 'replace'
+                    else:
+                        # Table exists or subsequent chunks: append
+                        if_exists_param = 'append'
+                    
+                    # Use to_sql with method='multi' for batch inserts
                     chunk_df.to_sql(
                         name='WEATHER_DATA_NORMALIZED',
                         con=self.engine,
-                        if_exists='append',
+                        if_exists=if_exists_param,
                         index=False,
                         method='multi',  # Multi-row INSERT for better performance
                         chunksize=1000  # Internal chunking for very large batches
