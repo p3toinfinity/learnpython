@@ -1,0 +1,10 @@
+{
+  "mysql": {
+    "host": "localhost",
+    "port": 3306,
+    "user": "karthik_master",
+    "password": "test123@",
+    "database": "xx_integrations",
+    "charset": "utf8mb4"
+  }
+}
