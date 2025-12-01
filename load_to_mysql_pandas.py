@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional
+from urllib.parse import quote_plus
 import numpy as np
 import pandas as pd
 from sqlalchemy import create_engine, text, inspect
@@ -454,9 +455,13 @@ class WeatherDataLoader:
     def connect_to_mysql(self, credentials: Dict) -> bool:
         """Connect to MySQL using SQLAlchemy."""
         try:
+            # URL-encode username and password to handle special characters
+            user = quote_plus(credentials['user'])
+            password = quote_plus(credentials['password'])
+            
             # Build connection string
             connection_string = (
-                f"mysql+pymysql://{credentials['user']}:{credentials['password']}"
+                f"mysql+pymysql://{user}:{password}"
                 f"@{credentials['host']}:{credentials['port']}/{credentials['database']}"
                 f"?charset={credentials['charset']}"
             )
